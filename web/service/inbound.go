@@ -1942,6 +1942,12 @@ func (s *InboundService) updateClientTraffics(tx *gorm.DB, oldInbound *model.Inb
 }
 
 func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
+	return s.addInboundClient(data, false)
+}
+
+// persistOnly is used by the explicit hot-add contract: persistence is followed by
+// an acknowledged live apply, never the normal route's restart fallback.
+func (s *InboundService) addInboundClient(data *model.Inbound, persistOnly bool) (bool, error) {
 	// Before anything parses the settings: interfaceClients below is spliced into the
 	// inbound's stored JSON verbatim, so an email left untrimmed here is persisted.
 	data.Settings = normalizeClientEmails(data.Settings)
@@ -2080,6 +2086,7 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 		}
 	}
 
+	originalSettings := oldInbound.Settings
 	var oldSettings map[string]any
 	err = json.Unmarshal([]byte(oldInbound.Settings), &oldSettings)
 	if err != nil {
@@ -2106,22 +2113,21 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 	db := database.GetDB()
 	tx := db.Begin()
 
-	defer func() {
-		if err != nil {
-			tx.Rollback()
-		} else {
-			tx.Commit()
-		}
-	}()
+	if tx.Error != nil {
+		return false, tx.Error
+	}
+	defer tx.Rollback()
 
 	needRestart := false
-	s.xrayApi.Init(p.GetAPIPort())
+	if !persistOnly {
+		s.xrayApi.Init(p.GetAPIPort())
+	}
 	for _, client := range clients {
 		if len(client.Email) > 0 {
 			if err = s.AddClientStat(tx, data.Id, &client); err != nil {
 				return false, err
 			}
-			if client.Enable {
+			if client.Enable && !persistOnly {
 				cipher := ""
 				if oldInbound.Protocol == "shadowsocks" {
 					cipher = oldSettings["method"].(string)
@@ -2147,9 +2153,21 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 			needRestart = true
 		}
 	}
-	s.xrayApi.Close()
-
-	return needRestart, tx.Save(oldInbound).Error
+	if !persistOnly {
+		s.xrayApi.Close()
+	}
+	if persistOnly {
+		result := tx.Model(&model.Inbound{}).Where("id = ? AND settings = ?", oldInbound.Id, originalSettings).Update("settings", oldInbound.Settings)
+		if result.Error != nil {
+			return false, result.Error
+		}
+		if result.RowsAffected != 1 {
+			return false, fmt.Errorf("inbound changed concurrently; retry hot provisioning")
+		}
+	} else if err := tx.Save(oldInbound).Error; err != nil {
+		return false, err
+	}
+	return needRestart, tx.Commit().Error
 }
 
 // clientIdentityKey returns the settings-JSON field a protocol's clients are

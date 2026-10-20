@@ -2,8 +2,8 @@
 // geo data files (geoip.dat / geosite.dat) into the panel executable via
 // go:embed and extracts them at runtime.
 //
-// The panel ships a SPECIFIC patched Xray-core fork (Sir-MmD/Xray-core, which
-// fixes the Shadowsocks per-user `method` fallback). To guarantee that exact
+// The panel ships a SPECIFIC patched Xray-core fork (hsklia/Xray-core, with
+// live peer admission/routing and the Shadowsocks per-user `method` fallback). To guarantee that exact
 // core is always the one that runs, ExtractXray overwrites the on-disk core
 // binary on every startup, and the panel forbids switching/updating the core
 // version from the dashboard (see ServerService.UpdateXray).

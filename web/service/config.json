@@ -10,6 +10,7 @@
     "tag": "api",
     "services": [
       "HandlerService",
+      "RoutingService",
       "LoggerService",
       "StatsService"
     ]

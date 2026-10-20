@@ -185,6 +185,10 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 		return nil, err
 	}
 
+	if err := enableHotRoutingAPI(xrayConfig); err != nil {
+		return nil, err
+	}
+
 	// The socks outbound fronting each SSH tunnel is synthesized here rather than
 	// stored in the template, so the tunnel and the outbound that points at it can
 	// never disagree. They used to be written from two different places at two
@@ -938,4 +942,37 @@ func (s *XrayService) IsNeedRestartAndSetFalse() bool {
 // DidXrayCrash checks if Xray crashed by verifying it's not running and wasn't manually stopped.
 func (s *XrayService) DidXrayCrash() bool {
 	return !s.IsXrayRunning() && !isManuallyStopped.Load()
+}
+
+// Stored templates created before hot provisioning must expose RoutingService too.
+func enableHotRoutingAPI(config *xray.Config) error {
+	if len(config.API) == 0 {
+		return nil
+	}
+	var api map[string]json.RawMessage
+	if err := json.Unmarshal(config.API, &api); err != nil {
+		return err
+	}
+	if api == nil {
+		return nil
+	}
+	var services []string
+	if len(api["services"]) > 0 {
+		if err := json.Unmarshal(api["services"], &services); err != nil {
+			return err
+		}
+	}
+	for _, name := range services {
+		if name == "RoutingService" {
+			return nil
+		}
+	}
+	services = append(services, "RoutingService")
+	api["services"], _ = json.Marshal(services)
+	out, err := json.Marshal(api)
+	if err != nil {
+		return err
+	}
+	config.API = out
+	return nil
 }

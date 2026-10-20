@@ -82,6 +82,8 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	g.POST("/clientIps/:email", read, ownsClient, a.getClientIps)
 	g.POST("/clearClientIps/:email", requirePerm(model.PermEditClient), ownsClient, a.clearClientIps)
 	g.POST("/addClient", requirePerm(model.PermCreateClient), a.addInboundClient)
+	g.POST("/addClientHot", requirePerm(model.PermCreateClient), a.addInboundClientHot)
+	g.POST("/addPeerHot", requirePerm(model.PermCreateClient), a.addInboundPeerHot)
 	g.POST("/:id/copyClients", requirePerm(model.PermCreateClient), owns, a.copyInboundClients)
 	g.POST("/:id/delClient/:clientId", requirePerm(model.PermDeleteClient), owns, a.delInboundClient)
 	g.POST("/updateClient/:clientId", requirePerm(model.PermEditClient), a.updateInboundClient)

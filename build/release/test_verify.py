@@ -238,6 +238,10 @@ class ReleaseValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(verify.ValidationError, "maximum is GLIBC_2.34"):
             self.validate()
 
+    def test_static_panel_has_no_required_glibc_versions(self):
+        self.assertEqual(verify.inspect_glibc(
+            Path("static-panel"), lambda _args: "No version information found in this file."), [])
+
     def test_release_version_suffix_is_rejected(self):
         (self.root / "config/version").write_text("1.9.4-hot-add")
         with self.assertRaisesRegex(verify.ValidationError, "dotted numeric"):

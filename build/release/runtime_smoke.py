@@ -77,7 +77,7 @@ def seed_settings(database: Path) -> None:
         "webListen": "127.0.0.1", "webPort": "28083", "webBasePath": "/",
         "webDomain": "", "webCertFile": "", "webKeyFile": "",
         "geofileAutoUpdate": "false", "subEnable": "false", "subJsonEnable": "false",
-        "vpnProvisioned": "true", "provisionedProtocols": "[]",
+        "vpnProvisioned": "true", "provisionedProtocols": "none",
     }
     connection = sqlite3.connect(database)
     try:
@@ -125,7 +125,7 @@ def verify(source: Path, arch: str) -> dict:
                     if process.poll() is not None:
                         raise RuntimeError("The release executable exited during startup")
                     try:
-                        with opener.open("http://127.0.0.1:28083/login", timeout=1) as response:
+                        with opener.open("http://127.0.0.1:28083/", timeout=1) as response:
                             if response.status == 200:
                                 break
                     except (OSError, urllib.error.URLError):

@@ -123,8 +123,9 @@ def inspect_glibc(path, command):
     require("GLIBC_PRIVATE" not in versions, "panel depends on private glibc symbols")
     required = sorted({tuple(map(int, value.split("."))) for value in
                        re.findall(r"\bGLIBC_(\d+(?:\.\d+)+)\b", versions)})
-    require(not required or required[-1] <= MAX_GLIBC,
-            f"panel requires GLIBC_{'.'.join(map(str, required[-1]))}; maximum is GLIBC_2.34")
+    if required:
+        require(required[-1] <= MAX_GLIBC,
+                f"panel requires GLIBC_{'.'.join(map(str, required[-1]))}; maximum is GLIBC_2.34")
     return [".".join(map(str, value)) for value in required]
 
 

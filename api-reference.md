@@ -176,6 +176,21 @@ and a reseller's mask is derived from their role rather than stored.
 | POST | `/clearClientIps/:email` | editClient | Forget them |
 | POST | `/onlines`, `/lastOnline` | accessInbounds | Liveness |
 
+As of `1.9.4.2`, `/addClient` creations whose target or membership set includes
+`wg-c` or `awg` preserve the normal ownership and reseller checks, then activate
+the new accounts live. Single and bulk requests acknowledge
+`obj: {"applied": true, "noRestart": true}` only after activation completes.
+All requested memberships must support live admission and fit their existing IP
+pools. Unsupported mixed memberships or insufficient capacity are refused rather
+than triggering a shared restart or moving existing peer addresses.
+
+An activation error may return `success: false` with
+`obj: {"persisted": true, "applied": false}`. The saved account and its reseller
+reservation are retained. Retry the exact request as the same caller to resume
+with the stored keys and a single charge. This cannot adopt an unrelated existing
+account: requests without a matching durable admission still reject duplicate
+identities. A successful replay does not reapply membership changes made later.
+
 Protocol-specific, documented in section 9:
 
 | Method | Path | Purpose |

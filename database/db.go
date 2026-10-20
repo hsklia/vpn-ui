@@ -41,6 +41,7 @@ func initModels() error {
 		// what it does not know) and keeps reading settings.clients exactly as before.
 		&model.Account{},
 		&model.AccountInbound{},
+		&model.LegacyClientAdmission{},
 		&model.OutboundTraffics{},
 		&model.Setting{},
 		&model.InboundClientIps{},

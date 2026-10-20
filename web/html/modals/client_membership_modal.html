@@ -61,6 +61,8 @@
     </div>
 
     <div class="bo-cf-pane">
+      <a-alert v-if="clientMembershipModal.addRetryNotice" type="warning" show-icon
+        :message="clientMembershipModal.addRetryNotice" :style="{ marginBottom: '12px' }"></a-alert>
       <!-- Identity: who the account is AND what it is allowed. The two were
            split across two tabs and did not need to be: an operator setting up a
            customer sets the quota in the same breath as the name. -->
@@ -445,6 +447,9 @@
     // ends up as the anchor. Empty on add, where the server mints the credentials.
     storedBy: {},
     onDone: null,
+    pendingAdd: null,
+    addRetryNotice: '',
+    formGeneration: 0,
 
     // Only these three cannot tell two of their own inbounds apart (bare
     // NAS-Identifier), which is exactly the set the server refuses.
@@ -503,6 +508,10 @@
     },
 
     show({ row = null, storedBy = {}, assignable = [], onDone = null }) {
+      this.formGeneration++;
+      this.confirmLoading = false;
+      this.pendingAdd = null;
+      this.addRetryNotice = '';
       this.assignable = assignable;
       this.onDone = onDone;
       this.isEdit = !!row;
@@ -930,6 +939,11 @@
     },
 
     async ok() {
+      if (this.confirmLoading) return;
+      if (!this.isEdit && this.pendingAdd && this.pendingAdd.signature !== this.addInputSignature()) {
+        this.addRetryNotice = 'This creation request may already be saved. Restore the original form and retry, or close and reopen to start a different request.';
+        return;
+      }
       const email = (this.client.email || '').trim();
       if (!email) return;
       // NOT a check on the inbound count. An account is allowed to be on none: it
@@ -978,10 +992,14 @@
       }
 
       this.confirmLoading = true;
+      const generation = this.formGeneration;
       const msg = this.isEdit ? await this.saveEdit(email, ids)
                               : await this.saveNew(email, ids);
+      if (generation !== this.formGeneration) return;
       this.confirmLoading = false;
       if (msg && msg.success) {
+        this.pendingAdd = null;
+        this.addRetryNotice = '';
         this.close();
         if (this.onDone) this.onDone();
       }
@@ -1124,13 +1142,51 @@
     // A NEW account, addressed to the first inbound it will land on. The other
     // memberships are the server's to fill, and the credential columns it fills
     // them from are the ones this entry just carried.
+    addInputSignature() {
+      // Do not include postedExpiry(): its absolute deadline advances with time.
+      return JSON.stringify({
+        client: this.client, ids: this.selected.slice().sort((a, b) => a - b),
+        totalGb: this.totalGb, days: this.days, delayedStart: this.delayedStart,
+        limitDown: this.limitDown, limitUp: this.limitUp, limitDevices: this.limitDevices,
+      });
+    },
     async saveNew(email, ids) {
       if (!ids.length) return await this.saveAccount(email, ids);
-      const first = this.assignable.find(x => x.inboundId === ids[0]);
-      const client = this.entryFor(first ? first.protocol : '', email, ids[0]);
-      const msg = await HttpUtil.post('/panel/api/inbounds/addClient',
-        { id: ids[0], inboundIds: ids, settings: JSON.stringify({ clients: [client] }) });
-      if (!msg || !msg.success) return msg;
+      if (!this.pendingAdd) {
+        const first = this.assignable.find(x => x.inboundId === ids[0]);
+        const client = this.entryFor(first ? first.protocol : '', email, ids[0]);
+        this.pendingAdd = {
+          signature: this.addInputSignature(),
+          body: JSON.stringify({ id: ids[0], inboundIds: ids, settings: JSON.stringify({ clients: [client] }) }),
+          saved: false,
+          uncertain: false,
+        };
+      }
+      const operation = this.pendingAdd;
+      let msg;
+      try {
+        msg = await HttpUtil.post('/panel/api/inbounds/addClient', JSON.parse(operation.body));
+      } catch (e) {
+        // A missing response cannot tell us whether the account was committed.
+        msg = null;
+      }
+      if (operation !== this.pendingAdd) return null;
+      if (!msg || !msg.success) {
+        if (msg && msg.obj && msg.obj.persisted === true) this.pendingAdd.saved = true;
+        // A later generic denial cannot resolve an earlier lost response.
+        if (!msg || msg.success !== false || msg.requestFailed === true
+            || (msg.obj && typeof msg.obj.persisted !== 'boolean')) this.pendingAdd.uncertain = true;
+        if (msg && msg.success === false && msg.requestFailed !== true && !this.pendingAdd.saved
+            && (!this.pendingAdd.uncertain || (msg.obj && msg.obj.persisted === false))
+            && (!msg.obj || msg.obj.persisted === false)) {
+          this.pendingAdd = null;
+          this.addRetryNotice = '';
+        } else {
+          this.addRetryNotice = 'Account creation is awaiting confirmation or activation. Retry without changing this form. Close and reopen to start a different request.';
+        }
+        return msg;
+      }
+      operation.saved = true;
       return (await this.writeAdtag(email, ids, ids[0])) || msg;
     },
 

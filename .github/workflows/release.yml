@@ -129,6 +129,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - name: Install Node for create-modal retry regressions
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
       - name: Check native toolchain and build prerequisites
         run: |
           sudo apt-get update
@@ -167,7 +171,7 @@ jobs:
           python3 -m unittest discover -s build/release -p 'test_*.py'
           # The full service suite includes both release version ordering regressions.
           go test -count=1 ./backend ./corebundle ./xray ./web/service
-          go test -race -count=1 ./logger ./xray ./web/service ./web/controller -run '^(TestHot|TestConcurrentLog|TestMaintenanceReleaseVersionOrdering$|TestComparePanelVersions$)'
+          go test -race -count=1 ./logger ./xray ./web/service ./web/controller -run '^(TestHot|TestLegacy|TestConcurrentLog|TestMaintenanceReleaseVersionOrdering$|TestComparePanelVersions$)'
       - name: Prove existing connections survive with the actual bundled core
         env:
           VPNUI_HOT_ADD_TEST_BINARY: ${{ github.workspace }}/corebundle/core/${{ matrix.arch }}/xray

@@ -20,17 +20,24 @@ hosting does not require renaming those modules.
   device. Account-derived routes are validated and replaced live.
 - Failed hot admission returns an error; it never requests a restart as fallback.
   Retries preserve credentials and reconcile a lost successful response.
-- Ordinary GUI/bulk/reseller mutations retain the existing upstream workflow.
-  This change does **not** promise no restart for those paths or for structural
-  inbound/core configuration changes.
+- Ordinary `/addClient` requests involving WireGuard (C) or AmneziaWG now use
+  targeted live activation after their normal authorization, reseller pricing
+  and membership projection. This includes single and bulk creation. Exact
+  retries resume a saved admission without replacing credentials or charging again.
+- These legacy creations use the existing address pools. Insufficient capacity
+  and memberships involving a protocol without live admission return an error
+  rather than silently expanding ranges or requesting a shared restart.
+- Existing account edits, deletions, other legacy protocol workflows and structural
+  inbound/core changes keep their existing behavior; their restart semantics have
+  not changed.
 - Shadowsocks 2022 multi-user admission accepts the bundled core's supported AES
   GCM methods and rejects unsupported methods before persistence.
 
 Stock native VLESS admission already supports live add when its API succeeds.
-The reproduced baseline restart cases were classic WireGuard and WireGuard (C)
-admission; the production incident's exact protocol/configuration remains
-unconfirmed. Kernel WG-C/AWG peer updates were already additive upstream; this
-fix also applies their derived shared-core routes live.
+The ordinary WireGuard (C) creation workflow also requested a full reconcile and
+a shared-core restart, even though its kernel peer update was additive. The legacy
+creation path now uses the same incremental peer and live routing operations as
+the explicit hot-add API, without running that full reconcile.
 
 ## Download and install a release
 
@@ -41,8 +48,15 @@ verify `SHA256SUMS`, and use the existing panel's Overview → VPN-UI → Manual
 backup first. The upgrade replaces the same installation and restarts its panel
 and supervised core once; it does not recreate users or reset configuration.
 
-Version `1.9.4.1` is a numeric maintenance release so the existing upload validator
-and update comparison recognize it as newer than `1.9.4`.
+Version `1.9.4.2` includes the legacy creation fix and is recognized as newer than
+`1.9.4.1` by the existing upload validator and update comparison.
+
+If an ordinary create responds with `success: false` and `obj.persisted: true`,
+the account was saved but live activation did not finish. Correct the reported
+runtime problem and retry the exact original request. Its reservation stays in
+place and the retry does not create another account or charge another sale.
+Disabled accounts can be stored without a running core. An already expired
+account must also have automatic renewal disabled to use this storage-only path.
 
 ## Automated build and release
 

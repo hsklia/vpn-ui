@@ -51,6 +51,8 @@
     </div>
 
     <div class="bo-cf-pane">
+      <a-alert v-if="clientsBulkModal.addRetryNotice" type="warning" show-icon
+        :message="clientsBulkModal.addRetryNotice" :style="{ marginBottom: '12px' }"></a-alert>
       <!-- Identity: how the batch is named, and what every account in it is
            allowed. Same shape and same order as the single form, so an operator
            who knows one knows the other. -->
@@ -319,6 +321,8 @@
     // eight random characters in front.
     existing: {},
     onDone: null,
+    pendingAdd: null,
+    addRetryNotice: '',
 
     // Only these three cannot tell two of their own inbounds apart (bare
     // NAS-Identifier), which is exactly the set the server refuses.
@@ -567,7 +571,22 @@
       }
     },
 
+    addInputSignature() {
+      return JSON.stringify({
+        ids: this.selected.slice().sort((a, b) => a - b),
+        quantity: this.quantity, emailMethod: this.emailMethod,
+        firstNum: this.firstNum, lastNum: this.lastNum,
+        emailPrefix: this.emailPrefix, emailPostfix: this.emailPostfix,
+        comment: this.comment, tgId: this.tgId, totalGb: this.totalGb,
+        days: this.days, delayedStart: this.delayedStart, reset: this.reset,
+      });
+    },
     async ok() {
+      if (this.confirmLoading) return;
+      if (this.pendingAdd && this.pendingAdd.signature !== this.addInputSignature()) {
+        this.addRetryNotice = 'This creation request may already be saved. Restore the original form and retry, or close and reopen to start a different request.';
+        return;
+      }
       // Each of these would otherwise leave the operator clicking a button that
       // does nothing, so the pane holding the reason is brought forward instead.
       // Deliberately not a dialog: this object is not a Vue instance so it has no
@@ -576,16 +595,22 @@
       if (!this.count || this.clashCount) { this.tab = 'preview'; return; }
       if (!this.selected.length || this.protocolClash) { this.tab = 'inbounds'; return; }
 
-      // A NEGATIVE expiry is not a date. It is "this many days from first use",
-      // and the server starts the clock on the first connection.
-      const expiryTime = !this.days ? 0
-        : this.delayedStart ? -(this.days * 86400000)
-        : Date.now() + this.days * 86400000;
-
-      const ids = this.selected.slice().sort((a, b) => a - b);
-      const first = this.assignable.find(x => x.inboundId === ids[0]);
-      const accounts = this.buildAccounts();
-      const clients = accounts.map(a => this.entryFor(first ? first.protocol : '', a, expiryTime));
+      if (!this.pendingAdd) {
+        // Keep both the minted identities and the absolute deadline on retry.
+        const expiryTime = !this.days ? 0
+          : this.delayedStart ? -(this.days * 86400000)
+          : Date.now() + this.days * 86400000;
+        const ids = this.selected.slice().sort((a, b) => a - b);
+        const first = this.assignable.find(x => x.inboundId === ids[0]);
+        const accounts = this.buildAccounts();
+        const clients = accounts.map(a => this.entryFor(first ? first.protocol : '', a, expiryTime));
+        this.pendingAdd = {
+          signature: this.addInputSignature(),
+          body: JSON.stringify({ id: ids[0], inboundIds: ids, settings: JSON.stringify({ clients }) }),
+          saved: false,
+          uncertain: false,
+        };
+      }
 
       // ONE request for the whole batch, addressed to the first inbound and
       // carrying the rest as the membership set. The server puts every posted
@@ -594,17 +619,41 @@
       // would charge a reseller once per inbound for one set of accounts, and the
       // second request would be refused outright for duplicate emails.
       this.confirmLoading = true;
-      const msg = await HttpUtil.post('/panel/api/inbounds/addClient',
-        { id: ids[0], inboundIds: ids, settings: JSON.stringify({ clients }) });
+      const operation = this.pendingAdd;
+      let msg;
+      try {
+        msg = await HttpUtil.post('/panel/api/inbounds/addClient', JSON.parse(operation.body));
+      } catch (e) {
+        msg = null;
+      }
+      if (operation !== this.pendingAdd) return;
       this.confirmLoading = false;
       if (msg && msg.success) {
+        this.pendingAdd = null;
+        this.addRetryNotice = '';
         this.close();
         if (this.onDone) this.onDone();
+      } else {
+        if (msg && msg.obj && msg.obj.persisted === true) this.pendingAdd.saved = true;
+        // A later generic denial cannot resolve an earlier lost response.
+        if (!msg || msg.success !== false || msg.requestFailed === true
+            || (msg.obj && typeof msg.obj.persisted !== 'boolean')) this.pendingAdd.uncertain = true;
+        if (msg && msg.success === false && msg.requestFailed !== true && !this.pendingAdd.saved
+            && (!this.pendingAdd.uncertain || (msg.obj && msg.obj.persisted === false))
+            && (!msg.obj || msg.obj.persisted === false)) {
+          this.pendingAdd = null;
+          this.addRetryNotice = '';
+        } else {
+          this.addRetryNotice = 'Account creation is awaiting confirmation or activation. Retry without changing this form. Close and reopen to start a different request.';
+        }
       }
     },
 
     show({ title = '', okText = '{{ i18n "sure" }}', assignable = [], existing = {},
            onDone = null }) {
+      this.confirmLoading = false;
+      this.pendingAdd = null;
+      this.addRetryNotice = '';
       this.title = title;
       this.okText = okText;
       this.assignable = assignable;

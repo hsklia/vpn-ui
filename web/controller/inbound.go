@@ -996,6 +996,16 @@ func (a *InboundController) addInboundClient(c *gin.Context) {
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
 		return
 	}
+	admission, err := a.inboundService.BeginLegacyClientAddition(data, session.GetLoginUser(c), membershipIds, membershipsExplicit)
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	if admission != nil {
+		defer admission.Close()
+		a.addInboundClientLive(c, data, membershipIds, membershipsExplicit, admission)
+		return
+	}
 	// Prices the account against the reseller's balance, clamps the posted client to
 	// their limits, and RESERVES the bytes before the account exists. Inactive for an
 	// admin, who has no balance to reserve against.

@@ -1,8 +1,9 @@
 class Msg {
-    constructor(success = false, msg = "", obj = null) {
+    constructor(success = false, msg = "", obj = null, requestFailed = false) {
         this.success = success;
         this.msg = msg;
         this.obj = obj;
+        this.requestFailed = requestFailed;
     }
 }
 
@@ -17,16 +18,19 @@ class HttpUtil {
 
     static _respToMsg(resp) {
         if (!resp || !resp.data) {
-            return new Msg(false, 'No response data');
+            return new Msg(false, 'No response data', null, true);
         }
         const { data } = resp;
         if (data == null) {
             return new Msg(true);
         }
         if (typeof data === 'object' && 'success' in data) {
+            if (typeof data.success !== 'boolean') {
+                return new Msg(false, 'Invalid response data', null, true);
+            }
             return new Msg(data.success, data.msg, data.obj);
         }
-        return typeof data === 'object' ? data : new Msg(false, 'unknown data:', data);
+        return typeof data === 'object' ? data : new Msg(false, 'unknown data:', data, true);
     }
 
     static async get(url, params, options = {}) {
@@ -51,7 +55,9 @@ class HttpUtil {
             return msg;
         } catch (error) {
             console.error('POST request failed:', error);
-            const errorMsg = new Msg(false, error.response?.data?.msg || error.response?.data?.message || error.message || 'Request failed');
+            // Without an application acknowledgement, a mutation may already
+            // have committed. Preserve this distinction for safe create retries.
+            const errorMsg = new Msg(false, error.response?.data?.msg || error.response?.data?.message || error.message || 'Request failed', null, true);
             this._handleMsg(errorMsg);
             return errorMsg;
         }

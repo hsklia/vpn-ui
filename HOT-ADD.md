@@ -32,7 +32,36 @@ admission; the production incident's exact protocol/configuration remains
 unconfirmed. Kernel WG-C/AWG peer updates were already additive upstream; this
 fix also applies their derived shared-core routes live.
 
-## Build from this fork
+## Download and install a release
+
+Operators do not need Go, Docker, or a source build. Download the binary matching
+its host architecture from [published releases](https://github.com/hsklia/vpn-ui/releases),
+verify `SHA256SUMS`, and use the existing panel's Overview → VPN-UI → Manual Update
+→ Update from file flow. Preserve an independent database/executable/service
+backup first. The upgrade replaces the same installation and restarts its panel
+and supervised core once; it does not recreate users or reset configuration.
+
+Version `1.9.4.1` is a numeric maintenance release so the existing upload validator
+and update comparison recognize it as newer than `1.9.4`.
+
+## Automated build and release
+
+[The release workflow](.github/workflows/release.yml) builds native Linux AMD64
+and ARM64 artifacts from the exact checked-out commit and recorded submodule pins.
+It performs a complete forced core/daemon build, resource completeness and ELF/libc
+checks, targeted normal/race tests and real-core continuity, then attaches source
+receipts and SHA-256 sums. It does not install anything on a VPN server.
+
+Pull requests build/test without publishing. A numeric tag matching `config/version`
+(or an explicit manual draft request) creates a **draft** release only after both
+architecture jobs succeed. Assets are not overwritten on an existing published
+release. Review and validate the exact downloaded artifacts before publishing the
+draft; an incomplete build must never become the latest downloadable release.
+Full integration tests against the exact release executable are an additional
+publication gate, beyond source/service tests. Keep test credentials and databases
+outside release assets.
+
+## Developer build from this fork
 
 Use an isolated **Linux** development/build host with Go 1.26.2, a C compiler
 (SQLite uses CGO), Docker, Git, curl, and standard build tools. Do not build in the
@@ -65,9 +94,10 @@ submodule. Some upstream daemon recipes and geodata fetch moving dependencies;
 pinning the Go source alone does not make the full binary bit-reproducible.
 
 The panel installer, CLI updater, and dashboard release updater use
-`hsklia/vpn-ui` releases in this fork. A source commit does not create a release
-asset. With no fork release available, these paths fail rather than silently
-download the stock panel. This work does not publish an installable binary.
+`hsklia/vpn-ui` releases in this fork. A source commit alone does not create a release
+asset. Only published, validated releases are downloadable through these paths;
+a draft is not an update target. Failed downloads do not fall back to the stock
+panel.
 
 ## Verify the paired source
 

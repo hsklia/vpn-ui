@@ -62,7 +62,7 @@ _geo_one() {
     local url="$1" out="$2" tmp rc=0
     if [[ "${GEO_FORCE:-0}" != "1" && -s "$out" ]]; then
         tmp="$(mktemp)"
-        curl -fsSL --retry 3 -z "$out" -o "$tmp" "$url" || rc=$?
+        curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -z "$out" -o "$tmp" "$url" || rc=$?
         if [[ $rc -eq 0 && -s "$tmp" ]]; then
             mv "$tmp" "$out"; ok "$(basename "$out"): updated"
         elif [[ $rc -eq 0 ]]; then
@@ -71,7 +71,7 @@ _geo_one() {
             rm -f "$tmp"; warn "$(basename "$out"): check failed (rc=$rc) — keeping cached copy"
         fi
     else
-        curl -fL --retry 3 -o "$out" "$url"; ok "$(basename "$out"): fetched"
+        curl -fL --retry 5 --retry-all-errors --retry-delay 5 -o "$out" "$url"; ok "$(basename "$out"): fetched"
     fi
 }
 

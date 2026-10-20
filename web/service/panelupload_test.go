@@ -18,6 +18,9 @@ func TestComparePanelVersions(t *testing.T) {
 		staged, current, want string
 	}{
 		{"1.9.0", "1.8.5", PanelUploadUpgrade},
+		{"1.9.4.1", "1.9.4", PanelUploadUpgrade},
+		{"1.9.4", "1.9.4.1", PanelUploadDowngrade},
+		{"1.9.4.1", "1.9.4.1", PanelUploadSame},
 		{"v1.9.0", "1.8.5", PanelUploadUpgrade},
 		{"1.8.5", "1.9.0", PanelUploadDowngrade},
 		{"1.8.5", "v1.8.5", PanelUploadSame},
@@ -281,5 +284,25 @@ func TestStagePanelBinaryFromURLReportsHTTPStatus(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "404") {
 		t.Errorf("error %q does not carry the status code", err)
+	}
+}
+
+// Maintenance releases must be both uploadable and discoverable by the updater.
+func TestMaintenanceReleaseVersionOrdering(t *testing.T) {
+	if !panelVersionPattern.MatchString("1.9.4.1") {
+		t.Fatal("numeric maintenance release rejected by upload probe")
+	}
+	for _, tc := range []struct {
+		candidate, current string
+		want               bool
+	}{
+		{"1.9.4.1", "1.9.4", true},
+		{"v1.9.4.1", "1.9.4", true},
+		{"1.9.4", "1.9.4.1", false},
+		{"1.9.4.1", "1.9.4.1", false},
+	} {
+		if got := versionNewer(tc.candidate, tc.current); got != tc.want {
+			t.Errorf("newer(%q, %q) = %v; want %v", tc.candidate, tc.current, got, tc.want)
+		}
 	}
 }

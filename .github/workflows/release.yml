@@ -1,0 +1,327 @@
+name: Build and validate release
+
+on:
+  pull_request:
+  push:
+    tags:
+      - 'v[0-9]*'
+  workflow_dispatch:
+    inputs:
+      publish_draft:
+        description: Create a draft release after both architectures pass
+        type: boolean
+        default: false
+      release_tag:
+        description: Existing numeric version tag at the selected ref (required for a draft)
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GOTOOLCHAIN: local
+  GOFLAGS: -mod=readonly
+  NO_COLOR: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  prepare:
+    name: Validate source and release tag
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      version: ${{ steps.source.outputs.version }}
+      tag: ${{ steps.source.outputs.tag }}
+      publish_draft: ${{ steps.source.outputs.publish_draft }}
+    steps:
+      - name: Check out exact source and pinned submodules
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Validate numeric version and matching tag
+        id: source
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+          REQUESTED_DRAFT: ${{ inputs.publish_draft && 'true' || 'false' }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          version = Path('config/version').read_text().strip()
+          if not re.fullmatch(r'[0-9]+(?:\.[0-9]+){2,3}', version):
+              raise SystemExit('config/version must contain a numeric release version')
+          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          tag = ''
+          publish = False
+          if os.environ['EVENT_NAME'] == 'push':
+              ref = os.environ['EVENT_REF']
+              if not ref.startswith('refs/tags/'):
+                  raise SystemExit('Only version tag pushes may publish a draft')
+              tag = ref.removeprefix('refs/tags/')
+              publish = True
+          elif os.environ['EVENT_NAME'] == 'workflow_dispatch':
+              tag = os.environ['REQUESTED_TAG'].strip()
+              publish = os.environ['REQUESTED_DRAFT'] == 'true'
+              if publish and not tag:
+                  raise SystemExit('A draft requires an existing numeric version tag')
+          if tag:
+              if not re.fullmatch(r'v[0-9]+(?:\.[0-9]+){2,3}', tag):
+                  raise SystemExit('Release tags must use vN.N.N or vN.N.N.N')
+              if tag != f'v{version}':
+                  raise SystemExit('The release tag does not match config/version')
+              tagged_commit = subprocess.check_output(
+                  ['git', 'rev-parse', '--verify', f'refs/tags/{tag}^{{commit}}'],
+                  text=True,
+              ).strip()
+              if tagged_commit != commit:
+                  raise SystemExit('The tag must identify the selected source commit')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for key, value in {
+                  'commit': commit, 'version': version, 'tag': tag,
+                  'publish_draft': str(publish).lower(),
+              }.items():
+                  output.write(f'{key}={value}\n')
+          PY
+
+  build:
+    name: Linux ${{ matrix.arch }} full build and tests
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    env:
+      RELEASE_ARCH: ${{ matrix.arch }}
+      EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - name: Check out validated source and pinned submodules
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Install the exact Go version from go.mod
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Check native toolchain and build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends build-essential binutils ca-certificates curl git python3
+          test "$(go env GOARCH)" = "$RELEASE_ARCH"
+          test "$(go env GOOS)" = linux
+          test "$(go env GOVERSION)" = "go$(awk '$1 == "go" {print $2}' go.mod)"
+          docker info
+          bash build/core/build.sh --check-source
+      - name: Build the complete panel, core, geo data and daemon bundle
+        run: |
+          unset SKIP_SUBMODULES SKIP_CORE SUBMODULES_LATEST SUBMODULES_UPDATE
+          unset CORE_FORCE GEO_FORCE GEO_LEAN GEO_ONLY XRAY_SRC DOCKER_NET CC CXX
+          test ! -e "build/out/vpn-ui-$RELEASE_ARCH"
+          test ! -e "corebundle/core/$RELEASE_ARCH/xray"
+          test ! -d "backend/bin/$RELEASE_ARCH"
+          ./build.sh --force-core --force-bundle --arch "$RELEASE_ARCH"
+      - name: Test the core and reject concurrent routing or peer regressions
+        run: |
+          fixture=third_party/Xray-core/resources/geosite.dat
+          test ! -e "$fixture"
+          trap 'rm -f "$fixture"' EXIT
+          mkdir -p "$(dirname "$fixture")"
+          cp corebundle/core/geosite.dat "$fixture"
+          (
+            cd third_party/Xray-core
+            go test -count=1 ./app/router ./proxy/wireguard
+            go test -race -count=1 ./app/router ./proxy/wireguard
+          )
+          rm -f "$fixture"
+          trap - EXIT
+          bash build/core/build.sh --check-source
+      - name: Test panel persistence, permissions and concurrent hot additions
+        run: |
+          python3 -m unittest discover -s build/core -p 'test_*.py'
+          python3 -m unittest discover -s build/release -p 'test_*.py'
+          # The full service suite includes both release version ordering regressions.
+          go test -count=1 ./backend ./corebundle ./xray ./web/service
+          go test -race -count=1 ./logger ./xray ./web/service ./web/controller -run '^(TestHot|TestConcurrentLog|TestMaintenanceReleaseVersionOrdering$|TestComparePanelVersions$)'
+      - name: Prove existing connections survive with the actual bundled core
+        env:
+          VPNUI_HOT_ADD_TEST_BINARY: ${{ github.workspace }}/corebundle/core/${{ matrix.arch }}/xray
+        run: |
+          go test -race -count=1 -timeout=90s ./web/service -run '^TestHotClientLiveCorePreservesEstablishedConnection$'
+      - name: Validate final artifact, embedded inputs and source provenance
+        id: validate_artifact
+        run: |
+          python3 build/release/verify.py --arch "$RELEASE_ARCH" --output "build/out/manifest-$RELEASE_ARCH.json"
+          bash build/core/build.sh --check-source
+          git diff --exit-code HEAD --
+      - name: Smoke test the final executable on supported Linux distributions
+        run: |
+          for image in almalinux:9 debian:12-slim ubuntu:24.04; do
+            docker pull "$image"
+            actual="$(docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+              --mount "type=bind,source=$PWD/build/out,target=/artifacts,readonly" \
+              "$image" "/artifacts/vpn-ui-$RELEASE_ARCH" -v)"
+            if [[ "$actual" != "$EXPECTED_VERSION" ]]; then
+              printf 'Unexpected version on %s: %s\n' "$image" "$actual" >&2
+              exit 1
+            fi
+          done
+      - name: Boot the final release offline and verify extracted core and geo hashes
+        run: |
+          docker build --tag "vpn-ui-release-smoke:$RELEASE_ARCH" - <<'DOCKERFILE'
+          FROM debian:12-slim
+          RUN apt-get update && apt-get install --yes --no-install-recommends python3 ca-certificates && rm -rf /var/lib/apt/lists/*
+          DOCKERFILE
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,exec,nosuid,size=1g \
+            --mount "type=bind,source=$PWD,target=/source,readonly" \
+            --mount "type=bind,source=$PWD/build/out,target=/results" \
+            "vpn-ui-release-smoke:$RELEASE_ARCH" \
+            python3 /source/build/release/runtime_smoke.py --source /source --arch "$RELEASE_ARCH" \
+            --output "/results/runtime-smoke-$RELEASE_ARCH.json"
+      - name: Write artifact checksums
+        working-directory: build/out
+        run: |
+          sha256sum "vpn-ui-$RELEASE_ARCH" "manifest-$RELEASE_ARCH.json" "runtime-smoke-$RELEASE_ARCH.json" > "SHA256SUMS-$RELEASE_ARCH.txt"
+          sha256sum --check "SHA256SUMS-$RELEASE_ARCH.txt"
+          cp "../../corebundle/core/$RELEASE_ARCH/xray" "xray-$RELEASE_ARCH"
+          sha256sum "xray-$RELEASE_ARCH" > "TEST-SHA256SUMS-$RELEASE_ARCH.txt"
+      - name: Upload validated release artifacts
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: |
+            build/out/vpn-ui-${{ matrix.arch }}
+            build/out/manifest-${{ matrix.arch }}.json
+            build/out/runtime-smoke-${{ matrix.arch }}.json
+            build/out/SHA256SUMS-${{ matrix.arch }}.txt
+            build/out/xray-${{ matrix.arch }}
+            build/out/TEST-SHA256SUMS-${{ matrix.arch }}.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Retain a validated build when later runtime checks fail
+        if: failure() && steps.validate_artifact.outcome == 'success'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: diagnostic-build-linux-${{ matrix.arch }}
+          path: |
+            build/out/vpn-ui-${{ matrix.arch }}
+            build/out/manifest-${{ matrix.arch }}.json
+            corebundle/core/${{ matrix.arch }}/xray
+            corebundle/core/*.dat
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+  draft-release:
+    name: Create validated draft release
+    needs: [prepare, build]
+    if: needs.prepare.outputs.publish_draft == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: draft-release-${{ needs.prepare.outputs.tag }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      SOURCE_COMMIT: ${{ needs.prepare.outputs.commit }}
+      EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - name: Download both validated architectures from this run
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: release-linux-*
+          merge-multiple: true
+          path: artifacts
+      - name: Verify assets and create a draft without replacing an existing release
+        working-directory: artifacts
+        run: |
+          for arch in amd64 arm64; do
+            test -s "vpn-ui-$arch"
+            test -s "manifest-$arch.json"
+            sha256sum --check "SHA256SUMS-$arch.txt"
+            sha256sum --check "TEST-SHA256SUMS-$arch.txt"
+          done
+          python3 - <<'PYTHON'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          for arch in ('amd64', 'arm64'):
+              manifest = json.loads(Path(f'manifest-{arch}.json').read_text())
+              if (manifest['architecture'] != arch or
+                      manifest['version'] != os.environ['EXPECTED_VERSION'] or
+                      manifest['source']['panel_revision'] != os.environ['SOURCE_COMMIT']):
+                  raise SystemExit(f'{arch} manifest does not identify the validated source')
+              digest = hashlib.sha256()
+              with Path(f'vpn-ui-{arch}').open('rb') as binary:
+                  for block in iter(lambda: binary.read(1024 * 1024), b''):
+                      digest.update(block)
+              if digest.hexdigest() != manifest['artifact']['sha256']:
+                  raise SystemExit(f'{arch} binary does not match its provenance manifest')
+              receipt = json.loads(Path(f'runtime-smoke-{arch}.json').read_text())
+              if (receipt['status'] != 'PASS' or receipt['architecture'] != arch or
+                      receipt['version'] != manifest['version'] or
+                      receipt['artifact_sha256'] != manifest['artifact']['sha256'] or
+                      receipt['http_ready'] is not True or
+                      receipt['running_extracted_core_stable'] is not True):
+                  raise SystemExit(f'{arch} runtime receipt does not validate this artifact')
+              resources = {item['path']: item['sha256'] for item in manifest['resources']}
+              extracted = {f'xray-linux-{arch}': resources[f'corebundle/core/{arch}/xray']}
+              for name in ('geoip.dat', 'geosite.dat', 'geoip_IR.dat', 'geosite_IR.dat',
+                           'geoip_RU.dat', 'geosite_RU.dat'):
+                  extracted[name] = resources[f'corebundle/core/{name}']
+              if receipt['extracted_sha256'] != extracted:
+                  raise SystemExit(f'{arch} extracted resources differ from their manifest')
+          # Recheck the remote tag after the full build, including annotated tags.
+          def api(path):
+              return json.loads(subprocess.check_output(['gh', 'api', path], text=True))
+          repository = os.environ['GH_REPO']
+          tag = os.environ['RELEASE_TAG']
+          target = api(f'repos/{repository}/git/ref/tags/{tag}')['object']
+          while target['type'] == 'tag':
+              target = api(f'repos/{repository}/git/tags/{target["sha"]}')['object']
+          if target['type'] != 'commit' or target['sha'] != os.environ['SOURCE_COMMIT']:
+              raise SystemExit('The remote release tag changed after source validation')
+          PYTHON
+          cat SHA256SUMS-amd64.txt SHA256SUMS-arm64.txt > SHA256SUMS.txt
+          printf 'Source commit: `%s`\n\n' "$SOURCE_COMMIT" > release-notes.md
+          printf 'Native Linux amd64 and arm64 builds passed artifact validation, focused race tests, live-core connection continuity, distribution version smoke tests, and exact executable startup with embedded core/geofile hash checks.\n\n' >> release-notes.md
+          printf 'This draft awaits final runtime acceptance before publication.\n' >> release-notes.md
+          # Creation fails if this tag already has a release. Never overwrite published assets.
+          gh release create "$RELEASE_TAG" \
+            vpn-ui-amd64 vpn-ui-arm64 manifest-amd64.json manifest-arm64.json \
+            runtime-smoke-amd64.json runtime-smoke-arm64.json SHA256SUMS.txt \
+            --verify-tag --draft --title "$RELEASE_TAG" --notes-file release-notes.md

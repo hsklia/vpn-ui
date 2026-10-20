@@ -98,7 +98,7 @@ func (s *InboundService) AddInboundClientHot(data *model.Inbound) error {
 		}
 	}
 	if !exists {
-		if _, err := s.addInboundClient(data, true); err != nil {
+		if _, err := s.addInboundClient(data, true, nil); err != nil {
 			return err
 		}
 	}

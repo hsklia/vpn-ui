@@ -1942,12 +1942,12 @@ func (s *InboundService) updateClientTraffics(tx *gorm.DB, oldInbound *model.Inb
 }
 
 func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
-	return s.addInboundClient(data, false)
+	return s.addInboundClient(data, false, nil)
 }
 
 // persistOnly is used by the explicit hot-add contract: persistence is followed by
 // an acknowledged live apply, never the normal route's restart fallback.
-func (s *InboundService) addInboundClient(data *model.Inbound, persistOnly bool) (bool, error) {
+func (s *InboundService) addInboundClient(data *model.Inbound, persistOnly bool, admission *model.LegacyClientAdmission) (bool, error) {
 	// Before anything parses the settings: interfaceClients below is spliced into the
 	// inbound's stored JSON verbatim, so an email left untrimmed here is persisted.
 	data.Settings = normalizeClientEmails(data.Settings)
@@ -2166,6 +2166,27 @@ func (s *InboundService) addInboundClient(data *model.Inbound, persistOnly bool)
 		}
 	} else if err := tx.Save(oldInbound).Error; err != nil {
 		return false, err
+	}
+	if admission != nil {
+		if !persistOnly {
+			return false, fmt.Errorf("admission receipts require persist-only client creation")
+		}
+		identities := make(map[string]int, len(clients))
+		for _, client := range clients {
+			var traffic xray.ClientTraffic
+			if err := tx.Where("LOWER(TRIM(email)) = ?", accountKey(client.Email)).First(&traffic).Error; err != nil {
+				return false, err
+			}
+			identities[accountKey(client.Email)] = traffic.Id
+		}
+		encoded, err := json.Marshal(identities)
+		if err != nil {
+			return false, err
+		}
+		admission.ClientIDs = string(encoded)
+		if err := tx.Create(admission).Error; err != nil {
+			return false, err
+		}
 	}
 	return needRestart, tx.Commit().Error
 }

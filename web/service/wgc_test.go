@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -119,11 +120,18 @@ func TestWgcXrayConfig(t *testing.T) {
 	}
 	t.Logf("generated config (%d bytes)", len(blob))
 
-	xrayBin := "../../corebundle/core/amd64/xray"
+	xrayBin := filepath.Join("..", "..", "corebundle", "core", runtime.GOARCH, "xray")
 	if _, err := os.Stat(xrayBin); err != nil {
 		t.Skipf("xray binary not found at %s: %v", xrayBin, err)
 	}
-	out, err := exec.Command(xrayBin, "-test", "-c", cfgPath).CombinedOutput()
+	// Release builds keep architecture-specific cores below the shared geodata.
+	assetDir, err := filepath.Abs(filepath.Join("..", "..", "corebundle", "core"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(xrayBin, "-test", "-c", cfgPath)
+	command.Env = append(os.Environ(), "xray.location.asset="+assetDir)
+	out, err := command.CombinedOutput()
 	t.Logf("xray -test output:\n%s", string(out))
 	if err != nil {
 		// dump the routing + dokodemo portion of the config for diagnosis

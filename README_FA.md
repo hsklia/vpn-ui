@@ -1,6 +1,6 @@
 [English](/README.md) | [فارسی](/README_FA.md) | [العربية](/README_AR.md) | [中文](/README_ZH.md) | [Español](/README_ES.md) | [Русский](/README_RU.md) | [Türkçe](/README_TR.md)
 
-> **فورک نگهداری‌شده:** سورس اصلاحات پنل در همین مخزن و سورس هسته در زیرماژولِ پین‌شدهٔ [هستهٔ اصلاح‌شده](https://github.com/hsklia/Xray-core) نگهداری می‌شود. راهنمای بیلد، محدودهٔ اصلاح و محدودیت‌های تست در [راهنمای اصلاحات](HOT-ADD.md) است. این تغییرِ سورس، به معنی انتشار باینری یا آماده‌بودن نصب خودکار پنل از بک‌آفیس نیست.
+> **فورک نگهداری‌شده:** سورس اصلاحات پنل در همین مخزن و سورس هسته در زیرماژولِ پین‌شدهٔ [هستهٔ اصلاح‌شده](https://github.com/hsklia/Xray-core) نگهداری می‌شود. راهنمای بیلد، محدودهٔ اصلاح و محدودیت‌های تست در [راهنمای اصلاحات](HOT-ADD.md) است. باینری‌های آمادهٔ نصب با [گردش‌کار خودکار انتشار](.github/workflows/release.yml) ساخته و بررسی می‌شوند و از [صفحهٔ انتشارها](https://github.com/hsklia/vpn-ui/releases) قابل دریافت‌اند. نصب خودکار پنل از بک‌آفیس همچنان پیاده‌سازی نشده است.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/logo.png" alt="VPN-UI Logo" width="260">

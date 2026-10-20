@@ -1,6 +1,6 @@
 [English](/README.md) | [فارسی](/README_FA.md) | [العربية](/README_AR.md) | [中文](/README_ZH.md) | [Español](/README_ES.md) | [Русский](/README_RU.md) | [Türkçe](/README_TR.md)
 
-> **Maintained fork:** source for the paired panel/core hot-add fix lives here and in the pinned [hsklia/Xray-core](https://github.com/hsklia/Xray-core) submodule. Read [HOT-ADD.md](HOT-ADD.md) for build instructions, tested scope, and rollout limits. No patched binary release or automatic back-office panel installer is published by this source change.
+> **Maintained fork:** source for the paired panel/core hot-add fix lives here and in the pinned [hsklia/Xray-core](https://github.com/hsklia/Xray-core) submodule. Read [HOT-ADD.md](HOT-ADD.md) for build instructions, tested scope, and rollout limits. Ready-to-install binaries are built and validated by [the release workflow](.github/workflows/release.yml); download published assets from [Releases](https://github.com/hsklia/vpn-ui/releases). Automatic back-office panel installation remains separate.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/logo.png" alt="VPN-UI Logo" width="260">

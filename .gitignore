@@ -65,3 +65,7 @@ __pycache__/
 
 # Local-only project notes — keep on disk, never commit.
 /MEMORY.md
+
+# Release validation is source, not the ignored generated release directory.
+!/build/release/
+!/build/release/*.py

@@ -31,14 +31,14 @@ Usage: ./build.sh [options]          # no options = the full build
 Skip work (iterating on Go code):
   -q, --quick             --skip-submodules + --skip-core: recompile the panel from
                           everything already cached. The usual dev loop.
-      --skip-submodules   don't touch third_party/*, build whatever is checked out
+      --skip-submodules   don't sync third_party/*; the core must still match its pin
       --skip-core         reuse the cached Xray core AND geo files
       --skip-bundle       reuse the VPN daemon bundle even when it looks stale
 
 Force work (picking up new upstream):
-      --latest            move the submodules to their tracked branch TIPS and rebuild
-                          the core from that. The new pin is left uncommitted; run
-                          'git add third_party/<name>' to persist it for everyone else
+      --latest            move submodules to tracked branch TIPS for review.
+                          If the core changes, the build stops until you review and
+                          commit the core gitlink, then rerun without --latest
       --update-submodules hard-sync the submodules back to the RECORDED pins,
                           discarding any local work in them
       --force-core        rebuild the Xray core even when the pin is unchanged
@@ -64,14 +64,13 @@ Environment (all still honored; the matching switch wins):
   CORE_FORCE  GEO_FORCE  GEO_LEAN  GEO_ONLY
   DOCKER_NET       extra 'docker run' flags for the daemon bundle (e.g.
                    --network=host when the default bridge is firewalled)
-  XRAY_SRC         build the core from another local checkout
-  XRAY_REPO/REF    fork URL / git ref for the fallback clone
+  XRAY_SRC         developer checkout override; always rebuilt, not a release pin
   CC               cgo cross compiler, required by -a/--arch off this host's arch
 
 Examples:
   ./build.sh                       full build (what a release ships)
   ./build.sh --quick               Go-only change: reuse the core and the bundle
-  ./build.sh --latest              after pushing new Xray-core commits
+  ./build.sh --latest              fetch candidate pins, then review and commit them
   ./build.sh --dry-run             what this run would rebuild, without building it
   ./build.sh --geo-lean            ~118MB smaller binary, geo fetched on demand
 EOF
@@ -176,10 +175,9 @@ if [[ "$SKIP_SUBMODULES" != "1" && -f .gitmodules ]]; then
     if [[ "$SUBMODULES_LATEST" == "1" ]]; then
         # --remote fetches each submodule's tracked branch (branch= in .gitmodules)
         # and moves the working tree to its tip — this is how new upstream commits
-        # (e.g. a freshly-pushed Xray-core) actually get pulled in. The core rebuild
-        # in step 1 then triggers automatically because the .xray.commit marker no
-        # longer matches the new HEAD. The parent's recorded pin is left dirty on
-        # purpose; commit third_party/* yourself to persist the bump.
+        # (e.g. a freshly-pushed Xray-core) actually get pulled in. The parent's
+        # recorded pin is left dirty on purpose. Core verification in step 1
+        # rejects a changed core until its reviewed gitlink is committed.
         step "pulling LATEST upstream submodule commits (--latest)"
         do_run git submodule update --init --remote --recursive
         info "submodules moved to branch tips — 'git add third_party/*' + commit to persist the new pin"
@@ -200,16 +198,17 @@ if [[ "$SKIP_SUBMODULES" != "1" && -f .gitmodules ]]; then
         # pin — i.e. someone has local work there (a patch to the Xray-core or telemt
         # fork). `git submodule update` would hard-reset it back to the pin and the build
         # would silently produce a binary WITHOUT that patch, which is exactly how the
-        # telemt patches were lost once before. Never rewind implicitly: build what is
-        # checked out and say so. Use --update-submodules to force the reset on purpose.
-        warn "submodule(s) AHEAD of the recorded pin — building what is checked out, NOT rewinding:"
+        # telemt patches were lost once before. Never rewind implicitly. Core
+        # verification rejects an uncommitted core pin; telemt keeps its existing
+        # behavior. Use --update-submodules to reset on purpose.
+        warn "submodule(s) differ from the recorded pin — leaving the checkout in place:"
         grep '^+' <<<"$sub_status" | sed 's/^/    /' || true
-        warn "commit the gitlink (git add third_party/<name>) to persist this, or --update-submodules to discard it"
+        warn "review and commit the gitlink before building the core, or use --update-submodules to restore the pin"
     else
         ok "submodules already at pinned commits — skipping clone/sync"
     fi
 else
-    ok "submodules: skipped, building whatever is checked out"
+    ok "submodule sync skipped; core source verification still applies"
 fi
 
 # 1. Xray core (built from the pinned third_party/Xray-core submodule) + latest geo.

@@ -1620,3 +1620,54 @@ it out of the raw settings map for any protocol that goes through `NormalizeVpnR
 and the browser reads it too, on l2tp and pptp, whose `fromJson` seeds `ipRanges` from it
 when the list is empty. It is a compatibility path on both sides, not a server-side
 oddity. `localIp` is the one that is genuinely Go-only.
+
+## Explicit hot provisioning
+
+The patched v1.9.4 integration adds two authenticated endpoints under
+`/panel/api/inbounds`. Both require `createClient`, access to the addressed inbound,
+and an administrator account. Resellers continue through the priced account workflow.
+Both accept form fields `id` and JSON-encoded `settings`; only one addressed inbound
+and one client/peer are allowed. Ordinary `/addClient` keeps its existing UI behavior.
+
+- `POST /addClientHot`: `settings={"clients":[{...}]}` for `wg-c`, `awg`, `vmess`,
+  `vless`, `trojan`, `shadowsocks`, `hysteria`, `hysteria2`, `tuic`, `anytls`, or `naive`.
+  New clients receive the ordinary validation, traffic row and pool-slot assignment.
+  An existing email on this inbound is an idempotent ensure: persisted credentials,
+  settings and limits take precedence over a retried request. Disabled traffic rows,
+  expired/exhausted accounts and expired/exhausted inbounds are rejected before live
+  admission. VLESS live users inherit the inbound's effective flow and testseed.
+  Shadowsocks 2022 hot additions support only `2022-blake3-aes-128-gcm` and
+  `2022-blake3-aes-256-gcm`; single-user-only 2022 methods are rejected before
+  persistence so the saved core configuration stays restartable.
+- `POST /addPeerHot`: `settings={"peers":[{"email":"client-u1-s2-i3",
+  "publicKey":"BASE64","privateKey":"BASE64","preSharedKey":"BASE64",
+  "allowedIPs":["10.0.0.2/32"],"keepAlive":25}]}` for classic `wireguard`.
+  `privateKey` and `preSharedKey` are optional. Private/public pairs, key identity,
+  allowed addresses and existing peer collisions are validated. A retry cannot
+  rotate a peer's keys, change its addresses, or replace another peer. Endpoint
+  fields are prohibited on live inbound additions. Unrelated settings, clients and
+  peer fields are preserved.
+
+Success is acknowledged only after persistence, live apply and live routing reload:
+
+```json
+{"success":true,"msg":"","obj":{"applied":true,"noRestart":true}}
+```
+
+Clients must require both explicit boolean acknowledgements. Failure returns
+`success:false` and does not request an Xray process/inbound restart. A failed live
+apply may leave the account/peer persisted; retry the same endpoint after resolving
+its error. Native retries verify runtime credentials, rather than treating any
+same-email user as success. Do not fall back to `/addClient`, `/update`, or a restart.
+
+The bundled core must include the matching hot WireGuard user manager and atomic
+routing reload patch. Generated configurations enable `RoutingService`, including
+stored templates created before this patch. Initial installation of the upgraded
+panel/core requires the usual planned service replacement; these endpoints do not
+upgrade a running core. Kernel `wg-c`/`awg` provisioning requires an existing live
+interface with unchanged server key and port. The hot path adds only missing peer
+entries and never rewrites server/obfuscation settings, removes other peers, or
+recreates an interface. AWG hot key reconciliation also rejects changes to server
+obfuscation parameters instead of minting unapplied headers. Interface drift,
+unavailable kernel APIs, runtime user
+conflicts, nftables failures, or routing API failures are surfaced to the caller.

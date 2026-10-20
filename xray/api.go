@@ -5,10 +5,15 @@ package xray
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/netip"
 	"regexp"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/logger"
@@ -25,8 +30,11 @@ import (
 	"github.com/xtls/xray-core/proxy/trojan"
 	"github.com/xtls/xray-core/proxy/vless"
 	"github.com/xtls/xray-core/proxy/vmess"
+	"github.com/xtls/xray-core/proxy/wireguard"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 )
 
 // XrayAPI is a gRPC client for managing Xray core configuration, inbounds, outbounds, and statistics.
@@ -219,13 +227,11 @@ func appendProtoVarint(buf []byte, v uint64) []byte {
 }
 
 // AddUser adds a user to an inbound in the Xray core using the specified protocol and user data.
-func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]any) error {
-	if x.HandlerServiceClient == nil {
-		return fmt.Errorf("xray api is not connected")
-	}
+// buildAPIUser is shared by the ordinary and fail-closed hot-add paths.
+func buildAPIUser(Protocol string, user map[string]any) (*protocol.User, error) {
 	userEmail, err := getRequiredUserString(user, "email")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var account *serial.TypedMessage
@@ -233,7 +239,7 @@ func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]an
 	case "vmess":
 		userID, err := getRequiredUserString(user, "id")
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		account = serial.ToTypedMessage(&vmess.Account{
@@ -242,12 +248,12 @@ func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]an
 	case "vless":
 		userID, err := getRequiredUserString(user, "id")
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		userFlow, err := getOptionalUserString(user, "flow")
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		vlessAccount := &vless.Account{
@@ -280,7 +286,7 @@ func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]an
 	case "trojan":
 		password, err := getRequiredUserString(user, "password")
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		account = serial.ToTypedMessage(&trojan.Account{
@@ -289,16 +295,20 @@ func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]an
 	case "shadowsocks":
 		cipher, err := getOptionalUserString(user, "cipher")
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		password, err := getRequiredUserString(user, "password")
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		var ssCipherType shadowsocks.CipherType
 		switch cipher {
+		case "aes-128-gcm":
+			ssCipherType = shadowsocks.CipherType_AES_128_GCM
+		case "aes-256-gcm":
+			ssCipherType = shadowsocks.CipherType_AES_256_GCM
 		case "chacha20-poly1305", "chacha20-ietf-poly1305":
 			ssCipherType = shadowsocks.CipherType_CHACHA20_POLY1305
 		case "xchacha20-poly1305", "xchacha20-ietf-poly1305":
@@ -313,15 +323,12 @@ func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]an
 				CipherType: ssCipherType,
 			})
 		} else {
-			account = serial.ToTypedMessage(&shadowsocks_2022.ServerConfig{
-				Key:   password,
-				Email: userEmail,
-			})
+			account = serial.ToTypedMessage(&shadowsocks_2022.Account{Key: password})
 		}
 	case "hysteria", "hysteria2":
 		auth, err := getRequiredUserString(user, "auth")
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		account = serial.ToTypedMessage(&hysteriaAccount.Account{
@@ -330,19 +337,19 @@ func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]an
 	case "anytls":
 		password, err := getRequiredUserString(user, "password")
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		account = forkAccount(anytlsAccountType, protoStringField{1, password})
 	case "tuic":
 		userID, err := getRequiredUserString(user, "id")
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		password, err := getRequiredUserString(user, "password")
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		account = forkAccount(tuicAccountType,
@@ -352,7 +359,7 @@ func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]an
 	case "naive":
 		password, err := getRequiredUserString(user, "password")
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		// Optional, and the empty case is not a degenerate one: the core falls back to
@@ -362,29 +369,124 @@ func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]an
 		// emitted before the field existed.
 		username, err := getOptionalUserString(user, "username")
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		account = forkAccount(naiveAccountType,
 			protoStringField{naiveAccountPasswordField, password},
 			protoStringField{naiveAccountUsernameField, username},
 		)
+	case "wireguard":
+		pub, err := wireguardAPIKey(user, "publicKey", true)
+		if err != nil {
+			return nil, err
+		}
+		psk, err := wireguardAPIKey(user, "preSharedKey", false)
+		if err != nil {
+			return nil, err
+		}
+		ips, ok := user["allowedIPs"].([]string)
+		if !ok || len(ips) == 0 {
+			return nil, fmt.Errorf("wireguard allowedIPs required")
+		}
+		seen := make(map[string]bool, len(ips))
+		canonical := make([]string, 0, len(ips))
+		for _, value := range ips {
+			prefix, err := netip.ParsePrefix(value)
+			if err != nil || prefix.Addr().Is4In6() {
+				return nil, fmt.Errorf("invalid wireguard allowed IP")
+			}
+			value = prefix.Masked().String()
+			if !seen[value] {
+				canonical = append(canonical, value)
+				seen[value] = true
+			}
+		}
+		sort.Strings(canonical)
+		keepAlive, _ := user["keepAlive"].(uint32)
+		if keepAlive > 65535 {
+			return nil, fmt.Errorf("wireguard keepalive exceeds 65535")
+		}
+		account = serial.ToTypedMessage(&wireguard.PeerConfig{PublicKey: pub, PreSharedKey: psk, AllowedIps: canonical, KeepAlive: keepAlive})
 	default:
-		return nil
+		return nil, fmt.Errorf("protocol %q does not support live users", Protocol)
 	}
+	return &protocol.User{Email: userEmail, Account: account}, nil
+}
 
-	client := *x.HandlerServiceClient
+func wireguardAPIKey(user map[string]any, name string, required bool) (string, error) {
+	value, err := getOptionalUserString(user, name)
+	if err != nil {
+		return "", err
+	}
+	if value == "" && !required {
+		return "", nil
+	}
+	key, err := base64.StdEncoding.DecodeString(value)
+	if err != nil || len(key) != 32 {
+		return "", fmt.Errorf("invalid wireguard %s", name)
+	}
+	encoded := hex.EncodeToString(key)
+	if strings.Trim(encoded, "0") == "" {
+		if required {
+			return "", fmt.Errorf("wireguard public key cannot be zero")
+		}
+		return "", nil
+	}
+	return encoded, nil
+}
 
-	_, err = client.AlterInbound(context.Background(), &command.AlterInboundRequest{
-		Tag: inboundTag,
-		Operation: serial.ToTypedMessage(&command.AddUserOperation{
-			User: &protocol.User{
-				Email:   userEmail,
-				Account: account,
-			},
-		}),
+// AddUser adds a user through the live HandlerService.
+func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]any) error {
+	if x.HandlerServiceClient == nil {
+		return fmt.Errorf("xray api is not connected")
+	}
+	u, err := buildAPIUser(Protocol, user)
+	if err != nil {
+		return err
+	}
+	return x.addAPIUser(inboundTag, u)
+}
+
+func (x *XrayAPI) addAPIUser(tag string, user *protocol.User) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := (*x.HandlerServiceClient).AlterInbound(ctx, &command.AlterInboundRequest{
+		Tag: tag, Operation: serial.ToTypedMessage(&command.AddUserOperation{User: user}),
 	})
 	return err
+}
+
+// EnsureUserHot retries an acknowledged live add without ever replacing a user.
+// Runtime credentials are compared, so a same-email conflict cannot look applied.
+func (x *XrayAPI) EnsureUserHot(Protocol, tag string, fields map[string]any) error {
+	if x.HandlerServiceClient == nil {
+		return fmt.Errorf("xray api is not connected")
+	}
+	want, err := buildAPIUser(Protocol, fields)
+	if err != nil {
+		return err
+	}
+	// Canonicalize accounts known to the panel (VMess materializes defaults).
+	if memory, err := want.ToMemoryUser(); err == nil {
+		want = protocol.ToProtoUser(memory)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	got, err := (*x.HandlerServiceClient).GetInboundUsers(ctx, &command.GetInboundUserRequest{Tag: tag})
+	if err != nil {
+		return fmt.Errorf("query live inbound users: %w", err)
+	}
+	for _, existing := range got.Users {
+		if existing == nil || !strings.EqualFold(existing.Email, want.Email) {
+			continue
+		}
+		if !proto.Equal(existing, want) {
+			return fmt.Errorf("live account conflicts with persisted credentials")
+		}
+		return nil
+	}
+	return x.addAPIUser(tag, want)
 }
 
 // RemoveUser removes a user from an inbound in the Xray core by email.
@@ -509,4 +611,21 @@ func mapToSlice[T any](m map[string]*T) []*T {
 		result = append(result, v)
 	}
 	return result
+}
+
+// ValidateWireguardHotPeer rejects malformed keys before settings are persisted.
+func ValidateWireguardHotPeer(publicKey, preSharedKey, privateKey string) error {
+	if _, err := wireguardAPIKey(map[string]any{"key": publicKey}, "key", true); err != nil {
+		return err
+	}
+	if _, err := wireguardAPIKey(map[string]any{"key": preSharedKey}, "key", false); err != nil {
+		return err
+	}
+	if privateKey != "" {
+		key, err := wgtypes.ParseKey(privateKey)
+		if err != nil || key.PublicKey().String() != publicKey {
+			return fmt.Errorf("wireguard private/public key mismatch")
+		}
+	}
+	return nil
 }

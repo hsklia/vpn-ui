@@ -69,7 +69,7 @@
 ## 安装面板
 
 ```bash
-curl -Ls https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/deploy.sh | sudo bash
+curl -Ls https://raw.githubusercontent.com/hsklia/vpn-ui/refs/heads/main/deploy.sh | sudo bash
 ```
 
 ## 卸载面板

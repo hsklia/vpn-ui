@@ -69,7 +69,7 @@ Bu proje, **[3X-UI](https://github.com/MHSanaei/3x-ui)** panelinin (2.9.3 sürü
 ## Panel Kurulumu
 
 ```bash
-curl -Ls https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/deploy.sh | sudo bash
+curl -Ls https://raw.githubusercontent.com/hsklia/vpn-ui/refs/heads/main/deploy.sh | sudo bash
 ```
 
 ## Panel Kaldırma
